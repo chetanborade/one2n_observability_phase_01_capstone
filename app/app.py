@@ -1,18 +1,48 @@
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+# Set up tracing
+trace.set_tracer_provider(TracerProvider())
+tracer_provider = trace.get_tracer_provider()
+
+# Configure exporter to send to SigNoz
+otlp_exporter = OTLPSpanExporter(
+    endpoint="http://signoz-otel-collector:4317",  # SigNoz collector
+    insecure=True
+)
+tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
 from flask import Flask, jsonify, request
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import redis
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 
 def get_db_connection():
     conn = psycopg2.connect(
-        host='127.0.0.1',
+        host='postgres',
         database='tododb',
         user='todouser',
         password='todopass',
-        port=5433
+        port=5432
     )
     return conn
+
+def get_redis_client():
+    return redis.Redis(host='redis', port=6379, decode_responses=True)
+
+def serialize_datetime(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 @app.route('/')
 def home():
@@ -39,19 +69,31 @@ def create_todo():
     conn.commit()
     cursor.close()
     conn.close()
-    return jsonify(todo), 201
+    
+    redis_client = get_redis_client()
+    redis_client.delete('all_todos')
+    
+    return jsonify(json.loads(json.dumps(todo, default=serialize_datetime))), 201
 
 @app.route('/todos', methods=['GET'])
 def get_todos():
+    redis_client = get_redis_client()
+    
+    cached_todos = redis_client.get('all_todos')
+    if cached_todos:
+        return jsonify(json.loads(cached_todos))
+    
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute('SELECT * FROM todos')
     todos = cursor.fetchall()
     cursor.close()
     conn.close()
-    return jsonify(todos)
+    
+    redis_client.set('all_todos', json.dumps(todos, default=serialize_datetime), ex=60)
+    
+    return jsonify(json.loads(json.dumps(todos, default=serialize_datetime)))
 
-# Get one todo
 @app.route('/todos/<int:id>', methods=['GET'])
 def get_todo(id):
     conn = get_db_connection()
@@ -60,9 +102,8 @@ def get_todo(id):
     todo = cursor.fetchone()
     cursor.close()
     conn.close()
-    return jsonify(todo)
+    return jsonify(json.loads(json.dumps(todo, default=serialize_datetime)))
 
-# Update todo
 @app.route('/todos/<int:id>', methods=['PUT'])
 def update_todo(id):
     data = request.get_json()
@@ -74,9 +115,12 @@ def update_todo(id):
     conn.commit()
     cursor.close()
     conn.close()
-    return jsonify(todo)
+    
+    redis_client = get_redis_client()
+    redis_client.delete('all_todos')
+    
+    return jsonify(json.loads(json.dumps(todo, default=serialize_datetime)))
 
-# Delete todo
 @app.route('/todos/<int:id>', methods=['DELETE'])
 def delete_todo(id):
     conn = get_db_connection()
@@ -85,7 +129,11 @@ def delete_todo(id):
     conn.commit()
     cursor.close()
     conn.close()
+    
+    redis_client = get_redis_client()
+    redis_client.delete('all_todos')
+    
     return jsonify({'message': 'deleted'})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
