@@ -1,7 +1,7 @@
 flask
 psycopg2-binary
 redis
-opentelemetry-distro
+opentelemetry-sdk
 opentelemetry-exporter-otlp
 opentelemetry-instrumentation-flask
 opentelemetry-instrumentation-psycopg2

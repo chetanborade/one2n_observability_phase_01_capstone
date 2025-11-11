@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   postgres:
     image: postgres:13
@@ -12,12 +11,42 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - signoz-net
+  
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: todo_postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://todouser:todopass@postgres:5432/tododb?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - signoz-net
 
   redis:
     image: redis:7
     container_name: todo_redis
     ports:
       - "6379:6379"
+    networks:
+      - signoz-net
+  
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.37.0
+    container_name: todo_redis_exporter
+    environment:
+      REDIS_ADDR: "redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - signoz-net
 
   flask-app:
     build: ./app
@@ -35,66 +64,13 @@ services:
       DB_PASSWORD: todopass
       REDIS_HOST: redis
       REDIS_PORT: 6379
-
-# Add to your existing docker-compose.yml
-
-  signoz-otel-collector:
-    image: signoz/signoz-otel-collector:v0.129.8
-    container_name: signoz-otel-collector
-    ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otel/config.yaml
-
-  signoz-query-service:
-    image: signoz/query-service:0.76.3-msk-integration-3
-    container_name: signoz-query-service
-    ports:
-      - "8080:8080"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    volumes:
-      - signoz_data:/var/lib/signoz
-    environment:
-      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=9000
-      - CLICKHOUSE_TCP_PORT=9000
-      - CLICKHOUSE_HTTP_PORT=8123
-      - CLICKHOUSE_CLUSTER=cluster
-      - CLICKHOUSE_DATABASE=signoz_traces
-      - JWT_SECRET_KEY=mysecretkey
-
-  # signoz-frontend:
-  #   image: signoz/frontend:0.76.0-a13d1c89
-  #   container_name: signoz-frontend
-  #   ports:
-  #     - "3301:3301"
-  #   depends_on:
-  #     - signoz-query-service
-  #   environment:
-  #     - FRONTEND_API_ENDPOINT=http://signoz-query-service:8080
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:23.7
-    container_name: signoz-clickhouse
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    ports:
-      - "9000:9000"
-    healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1'"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      OTEL_SERVICE_NAME: flask-todo-app
+    networks:
+      - signoz-net
+ 
+networks:
+  signoz-net:
+    external: true
 
 volumes:
   postgres_data:
-  clickhouse_data:
-  signoz_data:
